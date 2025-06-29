@@ -5,6 +5,7 @@
 #include <iostream>
 #include <unordered_set>
 #include <unordered_map>
+#include <memory>
 
 enum class outcome : char {
     none,
@@ -83,8 +84,8 @@ public:
             outcome_ = outcome::none;
             gen_next_moves();
             for (const auto &child: next_) {
-                for (const auto &child_outcome: child->outcomes()) {
-                    outcomes_[child_outcome.first] += child_outcome.second;
+                for (const auto &[outcome, count]: child->outcomes()) {
+                    outcomes_[outcome] += count;
                 }
             }
         } else if (winner == player::player1) {
@@ -123,12 +124,18 @@ public:
     [[nodiscard]] board_state get_board_state() const {
         board_state state{};
         if (!move_.has_value()) return state;
-        const node *current = this;
+        auto current = this;
         while (current) {
+            if (!current->move_.has_value()) break;
             state[current->move_->x][current->move_->y] = current->move_->player ? player::player2 : player::player1;
             current = current->prev_;
         }
         return state;
+    }
+
+    [[nodiscard]] const node *get_first_leaf() const {
+        if (next_.empty()) return this;
+        return next_[0]->get_first_leaf();
     }
 
     [[nodiscard]] int num_states() const {
@@ -139,26 +146,22 @@ public:
         return count;
     }
 
-    [[nodiscard]] const node *get_first_leaf() const {
-        if (outcome_ != outcome::none) {
-            return this;
-        }
-        return next_.front()->get_first_leaf();
-    }
-
-    const std::unordered_map<outcome, int> &outcomes() const {
+    [[nodiscard]] const std::unordered_map<outcome, int> &outcomes() const {
         return outcomes_;
     }
 
     void subtract_outcomes(const std::unordered_map<outcome, int> &other) {
-        for (const auto &pair: other) {
-            outcomes_[pair.first] -= pair.second;
+        for (const auto &[outcome, count]: other) {
+            if (outcomes_[outcome] < count) {
+                std::cerr << "Error: trying to subtract more outcomes than available." << std::endl;
+            }
+            outcomes_[outcome] -= count;
         }
         if (prev_ == nullptr) return;
         prev_->subtract_outcomes(other);
     }
 
-    std::vector<std::weak_ptr<node> > get_leaf_nodes_with_outcome(const outcome target_outcome) const {
+    [[nodiscard]] std::vector<std::weak_ptr<node> > get_leaf_nodes_with_outcome(const outcome target_outcome) const {
         std::vector<std::weak_ptr<node> > nodes;
 
         for (const auto &child: next_) {
@@ -171,20 +174,20 @@ public:
         return nodes;
     }
 
-    std::vector<std::weak_ptr<node> > get_leaf_nodes_without_outcome(const outcome target_outcome) const {
+    [[nodiscard]] std::vector<std::weak_ptr<node> > get_leaf_nodes_without_outcome(const outcome target_outcome) const {
         std::vector<std::weak_ptr<node> > nodes;
 
         for (const auto &child: next_) {
             if (child->outcome_ != target_outcome && child->outcome_ != outcome::none) {
                 nodes.push_back(child);
             }
-            auto child_nodes = child->get_leaf_nodes_with_outcome(target_outcome);
+            auto child_nodes = child->get_leaf_nodes_without_outcome(target_outcome);
             nodes.insert(nodes.end(), child_nodes.begin(), child_nodes.end());
         }
         return nodes;
     }
 
-    std::vector<std::weak_ptr<node> > get_all_leaves() const {
+    [[nodiscard]] std::vector<std::weak_ptr<node> > get_all_leaves() const {
         std::vector<std::weak_ptr<node> > leaves;
 
         for (const auto &child: next_) {
@@ -198,19 +201,34 @@ public:
         return leaves;
     }
 
-    node *prev() const {
+    [[nodiscard]] node *prev() const {
         return prev_;
     }
 
-    const std::vector<std::shared_ptr<node> > &next() const {
+    [[nodiscard]] const std::vector<std::shared_ptr<node> > &next() const {
         return next_;
     }
 
-    std::vector<std::shared_ptr<node> > &next() {
+    [[nodiscard]] std::vector<std::shared_ptr<node> > &next() {
         return next_;
     }
 
-    std::optional<move> get_move() const {
+    outcome &get_outcome() {
+        return outcome_;
+    }
+
+    std::unordered_map<outcome, int> &outcomes() {
+        return outcomes_;
+    }
+
+    void add_outcome(const outcome target_outcome) {
+        outcomes_[target_outcome] += 1;
+        if (prev_ != nullptr) {
+            prev_->add_outcome(target_outcome);
+        }
+    }
+
+    [[nodiscard]] std::optional<move> get_move() const {
         return *move_;
     }
 };
