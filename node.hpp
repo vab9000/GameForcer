@@ -1,16 +1,19 @@
 #pragma once
+#include <cassert>
+#include <memory>
 #include <vector>
 #include <array>
 #include <optional>
 #include <iostream>
-#include <unordered_set>
 #include <unordered_map>
+#include <sstream>
+#include <fstream>
 
 enum class outcome : char {
-    none,
-    player1,
-    player2,
-    draw
+    none = 0,
+    player1 = 1,
+    player2 = 2,
+    draw = 3
 };
 
 using move = struct {
@@ -36,9 +39,8 @@ inline void print_board(const board_state &state) {
                 std::cout << static_cast<char>(cell);
             }
         }
-        std::cout << '\n';
+        std::cout << std::endl;
     }
-    std::cout << "-----\n";
 }
 
 inline player is_winning(const board_state &state) {
@@ -83,8 +85,8 @@ public:
             outcome_ = outcome::none;
             gen_next_moves();
             for (const auto &child: next_) {
-                for (const auto &child_outcome: child->outcomes()) {
-                    outcomes_[child_outcome.first] += child_outcome.second;
+                for (const auto &[outcome, count]: child->outcomes()) {
+                    outcomes_[outcome] += count;
                 }
             }
         } else if (winner == player::player1) {
@@ -107,6 +109,18 @@ public:
         std::cout << std::endl;
     }
 
+    void print_info(void) const {
+        std::cout << "States: " << num_states() << "\n"
+                  << "Leaves: " << get_all_leaves().size() << "\n";
+    
+        for (auto outcome : outcomes_) {
+            std::cout << "Outcome: " << static_cast<int>(outcome.first) << ", Count: " << outcome.second << "\n";
+        }
+
+        std::cout << std::endl;
+    }
+
+
     void gen_next_moves() {
         const bool next_player = move_.has_value() ? !move_->player : false;
         const board_state state = get_board_state();
@@ -120,30 +134,24 @@ public:
         }
     }
 
-    [[nodiscard]] board_state get_board_state() const {
+    board_state get_board_state() const {
         board_state state{};
         if (!move_.has_value()) return state;
         const node *current = this;
         while (current) {
+            if (!current->move_.has_value()) break;
             state[current->move_->x][current->move_->y] = current->move_->player ? player::player2 : player::player1;
             current = current->prev_;
         }
         return state;
     }
 
-    [[nodiscard]] int num_states() const {
+    int num_states() const {
         int count = 1;
         for (const auto &child: next_) {
             count += child->num_states();
         }
         return count;
-    }
-
-    [[nodiscard]] const node *get_first_leaf() const {
-        if (outcome_ != outcome::none) {
-            return this;
-        }
-        return next_.front()->get_first_leaf();
     }
 
     const std::unordered_map<outcome, int> &outcomes() const {
@@ -153,35 +161,18 @@ public:
     void subtract_outcomes(const std::unordered_map<outcome, int> &other) {
         for (const auto &pair: other) {
             outcomes_[pair.first] -= pair.second;
+            if (outcomes_[pair.first] == 0) outcomes_.erase(pair.first);
         }
         if (prev_ == nullptr) return;
         prev_->subtract_outcomes(other);
     }
 
-    std::vector<std::weak_ptr<node> > get_leaf_nodes_with_outcome(const outcome target_outcome) const {
-        std::vector<std::weak_ptr<node> > nodes;
-
-        for (const auto &child: next_) {
-            if (child->outcome_ == target_outcome) {
-                nodes.push_back(child);
-            }
-            auto child_nodes = child->get_leaf_nodes_with_outcome(target_outcome);
-            nodes.insert(nodes.end(), child_nodes.begin(), child_nodes.end());
+    void add_outcomes(const std::unordered_map<outcome, int> &other) {
+        for (const auto &pair: other) {
+            outcomes_[pair.first] += pair.second;
         }
-        return nodes;
-    }
-
-    std::vector<std::weak_ptr<node> > get_leaf_nodes_without_outcome(const outcome target_outcome) const {
-        std::vector<std::weak_ptr<node> > nodes;
-
-        for (const auto &child: next_) {
-            if (child->outcome_ != target_outcome && child->outcome_ != outcome::none) {
-                nodes.push_back(child);
-            }
-            auto child_nodes = child->get_leaf_nodes_with_outcome(target_outcome);
-            nodes.insert(nodes.end(), child_nodes.begin(), child_nodes.end());
-        }
-        return nodes;
+        if (prev_ == nullptr) return;
+        prev_->add_outcomes(other);
     }
 
     std::vector<std::weak_ptr<node> > get_all_leaves() const {
@@ -213,4 +204,122 @@ public:
     std::optional<move> get_move() const {
         return *move_;
     }
+
+    outcome get_outcome() const {
+        return outcome_;
+    }
+
+    void make_leaf() {
+        assert(outcomes_.size() == 1);
+        next_.clear();
+        prev_->subtract_outcomes(outcomes_);
+        outcome o = outcomes_.begin()->first;
+        outcomes_[o] = 1;
+        outcome_ = o;
+        prev_->add_outcomes(outcomes_);
+    }
+
+    std::string to_json(int indent = 0) const {
+        std::ostringstream oss;
+        std::string indent_str(indent, ' ');
+        std::string indent_str_next(indent + 2, ' ');
+
+        oss << indent_str << "{\n";
+        oss << indent_str_next << "\"move\": ";
+        if (move_) {
+            oss << "\"Player " << (move_->player ? "O" : "X")
+                << " to (" << static_cast<int>(move_->x)
+                << ", " << static_cast<int>(move_->y) << ")\"";
+        } else {
+            oss << "\"Start\"";
+        }
+        oss << ",\n";
+
+        oss << indent_str_next << "\"outcome\": \"" << static_cast<int>(outcome_) << "\",\n";
+        oss << indent_str_next << "\"children\": [\n";
+
+        for (size_t i = 0; i < next_.size(); ++i) {
+            oss << next_[i]->to_json(indent + 4);
+            if (i + 1 < next_.size()) {
+                oss << ",";
+            }
+            oss << "\n";
+        }
+
+        oss << indent_str_next << "]\n";
+        oss << indent_str << "}";
+        return oss.str();
+    }
+
+    void export_tree_to_html(const node& root, const std::string& filename = "tree.html") {
+        std::ofstream file(filename);
+        file << R"""(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Tic-Tac-Toe Game Tree</title>
+    <style>
+        ul { list-style-type: none; padding-left: 20px; }
+        li::before { content: ""; padding-right: 5px; cursor: pointer; }
+        li.expanded::before { content: "▼"; }
+        span.node { cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Tic-Tac-Toe Game Tree</h1>
+    <div id="tree-container"></div>
+    <script>
+        const treeData = )""" << root.to_json() << R"""(;
+
+        function createTreeNode(node) {
+            const li = document.createElement("li");
+            const container = document.createElement("div");
+            container.style.display = "flex";
+            container.style.alignItems = "center";
+
+            const toggle = document.createElement("span");
+            toggle.textContent = "▶";
+            toggle.style.cursor = "pointer";
+            toggle.style.width = "1em";
+            toggle.style.display = node.children.length ? "inline-block" : "none";
+
+            const label = document.createElement("span");
+            label.className = "node";
+            label.textContent = node.move + " (Outcome: " + node.outcome + ")";
+            label.style.marginLeft = "0.5em";
+
+            container.appendChild(toggle);
+            container.appendChild(label);
+            li.appendChild(container);
+
+            const ul = document.createElement("ul");
+            ul.style.display = "none";
+            for (const child of node.children) {
+                ul.appendChild(createTreeNode(child));
+            }
+            li.appendChild(ul);
+
+            toggle.onclick = () => {
+                const isExpanded = ul.style.display === "block";
+                ul.style.display = isExpanded ? "none" : "block";
+                toggle.textContent = isExpanded ? "▶" : "▼";
+            };
+
+            label.onclick = toggle.onclick;
+
+            return li;
+        }
+
+        const treeContainer = document.getElementById("tree-container");
+        const ul = document.createElement("ul");
+        ul.appendChild(createTreeNode(treeData));
+        treeContainer.appendChild(ul);
+    </script>
+</body>
+</html>
+        )""";
+        file.close();
+    }
+
 };
